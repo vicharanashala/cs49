@@ -1,0 +1,36 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile",
+      "type": "object",
+      "properties": {}
+    },
+    "Query": {
+      "title": "Query",
+      "description": "User query",
+      "type": "object",
+      "properties": {}
+    },
+    "FAQ": {
+      "title": "FAQ",
+      "description": "Frequently asked questions",
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User accounts"
+    },
+    "/queries/{queryId}": {
+      "schema": { "$ref": "#/entities/Query" },
+      "description": "Queries"
+    },
+    "/faqs/{faqId}": {
+      "schema": { "$ref": "#/entities/FAQ" },
+      "description": "FAQs"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Full-Stack React & Express App",
+  "description": "A complete, fully runnable MERN stack application with authentication, JWT, Tailwind dark mode, and React Router.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
