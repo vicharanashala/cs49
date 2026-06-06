@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, Link, Outlet } from 'react-router-dom';
 import axios from 'axios';
-import { HelpCircle, FileText, CheckCircle2, MessageSquarePlus, LogOut, Loader2, Star, AlertTriangle, ArrowRight, TrendingUp } from 'lucide-react';
+import { HelpCircle, FileText, CheckCircle2, MessageSquarePlus, LogOut, Loader2, Star, AlertTriangle, ArrowRight, TrendingUp, Bell } from 'lucide-react';
 
 // --- Axios Config ---
 const api = axios.create({ baseURL: '/api' });
@@ -35,6 +35,61 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
+
+// --- Notifications Context ---
+interface NotificationContextType {
+  studentTrackNotifs: number;
+  openNotifs: number;
+  adminApproveNotifs: number;
+  adminEscalatedNotifs: number;
+  refresh: () => void;
+}
+
+const NotificationContext = createContext<NotificationContextType | null>(null);
+
+export function useNotifications() {
+  const ctx = useContext(NotificationContext);
+  if (!ctx) throw new Error('useNotifications must be used within NotificationProvider');
+  return ctx;
+}
+
+function NotificationProvider({ children }: { children: ReactNode }) {
+  const [studentTrackNotifs, setStudentTrackNotifs] = useState(0);
+  const [openNotifs, setOpenNotifs] = useState(0);
+  const [adminApproveNotifs, setAdminApproveNotifs] = useState(0);
+  const [adminEscalatedNotifs, setAdminEscalatedNotifs] = useState(0);
+
+  const fetchCounts = async () => {
+    try {
+      const [myRes, openRes, pendingRes, escalatedRes] = await Promise.all([
+        api.get('/queries/my'),
+        api.get('/queries/open'),
+        api.get('/queries/pending'),
+        api.get('/queries/escalated'),
+      ]);
+      const myQueries = myRes.data || [];
+      const unread = myQueries.filter((q: any) => q.studentRead === false).length;
+      setStudentTrackNotifs(unread);
+      setOpenNotifs((openRes.data || []).length);
+      setAdminApproveNotifs((pendingRes.data || []).length);
+      setAdminEscalatedNotifs((escalatedRes.data || []).length);
+    } catch (e) {
+      // ignore errors
+    }
+  };
+
+  useEffect(() => {
+    fetchCounts();
+    const id = setInterval(fetchCounts, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <NotificationContext.Provider value={{ studentTrackNotifs, openNotifs, adminApproveNotifs, adminEscalatedNotifs, refresh: fetchCounts }}>
+      {children}
+    </NotificationContext.Provider>
+  );
+}
 
 function useAuth() {
   const ctx = useContext(AuthContext);
@@ -137,6 +192,8 @@ function Login() {
 
 function Layout() {
   const { user, logout } = useAuth();
+  const notifs = useNotifications();
+  const [showNotifs, setShowNotifs] = useState(false);
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-900 flex flex-col">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-20">
@@ -145,10 +202,34 @@ function Layout() {
             <img src="/logo.png" alt="VINS-Connect Logo" className="h-10 w-10 rounded-lg object-cover shadow-sm" />
             <span className="font-semibold text-lg tracking-tight">VINS-Connect</span>
           </Link>
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-6 relative">
             <div className="hidden sm:flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-100">
                <span className="w-2 h-2 rounded-full bg-green-500"></span>
                <span className="text-xs font-medium text-gray-600">{user?.name} ({user?.role})</span>
+            </div>
+            <div className="relative">
+              <button onClick={() => setShowNotifs(s => !s)} className="relative p-2 rounded-lg hover:bg-gray-50 transition-colors">
+                <Bell className="w-5 h-5 text-gray-600" />
+                {(notifs.openNotifs + notifs.studentTrackNotifs + notifs.adminApproveNotifs + notifs.adminEscalatedNotifs) > 0 && (
+                  <span className="absolute top-0 right-0 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white" />
+                )}
+              </button>
+              {showNotifs && (
+                <div className="absolute right-0 mt-2 w-72 bg-white rounded-xl shadow-lg border border-gray-100 z-30">
+                  <div className="p-3">
+                    <div className="text-sm font-medium text-gray-700 mb-2">Notifications</div>
+                    <div className="space-y-2">
+                      {notifs.studentTrackNotifs > 0 && <Link to="/track" onClick={() => setShowNotifs(false)} className="block text-sm text-gray-700 hover:bg-gray-50 rounded-md p-2">You have {notifs.studentTrackNotifs} query updates</Link>}
+                      {notifs.openNotifs > 0 && <Link to="/resolve" onClick={() => setShowNotifs(false)} className="block text-sm text-gray-700 hover:bg-gray-50 rounded-md p-2">{notifs.openNotifs} queries waiting to be resolved</Link>}
+                      {notifs.adminApproveNotifs > 0 && <Link to="/approve" onClick={() => setShowNotifs(false)} className="block text-sm text-gray-700 hover:bg-gray-50 rounded-md p-2">{notifs.adminApproveNotifs} answers awaiting approval</Link>}
+                      {notifs.adminEscalatedNotifs > 0 && <Link to="/escalated" onClick={() => setShowNotifs(false)} className="block text-sm text-gray-700 hover:bg-gray-50 rounded-md p-2">{notifs.adminEscalatedNotifs} escalated queries</Link>}
+                      {(notifs.studentTrackNotifs + notifs.openNotifs + notifs.adminApproveNotifs + notifs.adminEscalatedNotifs) === 0 && (
+                        <div className="text-sm text-gray-400">No new notifications</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             <button onClick={logout} className="text-gray-500 hover:text-gray-900 transition-colors flex items-center gap-2 text-sm font-medium">
               <LogOut className="w-4 h-4" /> <span className="hidden sm:inline">Sign Out</span>
@@ -169,6 +250,7 @@ function Dashboard() {
   const [searchResults, setSearchResults] = useState<Faq[] | null>(null);
   const [searching, setSearching] = useState(false);
   const { user } = useAuth();
+  const notifs = useNotifications();
 
   useEffect(() => {
     api.get('/faqs').then(res => setFaqs(res.data)).catch(console.error);
@@ -236,14 +318,16 @@ function Dashboard() {
                </Card>
              </Link>
              <Link to="/resolve">
-               <Card className="p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer h-full group">
+               <Card className="relative p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer h-full group">
+                 {notifs.openNotifs > 0 && <div className="absolute top-3 right-3"><span className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-semibold bg-red-600 text-white">{notifs.openNotifs}</span></div>}
                   <div className="w-12 h-12 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-105 transition-transform"><CheckCircle2 className="w-6 h-6" /></div>
                   <h3 className="text-lg font-semibold mb-2">Resolve Queries</h3>
                   <p className="text-sm text-gray-500">Share your knowledge by answering open queries from fellow students.</p>
                </Card>
              </Link>
              <Link to="/track">
-               <Card className="p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer h-full group">
+               <Card className="relative p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer h-full group">
+                 {notifs.studentTrackNotifs > 0 && <div className="absolute top-3 right-3"><span className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-semibold bg-red-600 text-white">{notifs.studentTrackNotifs}</span></div>}
                   <div className="w-12 h-12 bg-purple-50 text-purple-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-105 transition-transform"><TrendingUp className="w-6 h-6" /></div>
                   <h3 className="text-lg font-semibold mb-2">Track Query</h3>
                   <p className="text-sm text-gray-500">Check the status of your queries, provide feedback, or escalate issues.</p>
@@ -252,14 +336,16 @@ function Dashboard() {
              {user?.role === 'admin' && (
                <>
                  <Link to="/approve">
-                   <Card className="p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer h-full group border-l-4 border-l-yellow-500">
+                   <Card className="relative p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer h-full group border-l-4 border-l-yellow-500">
+                     {notifs.adminApproveNotifs > 0 && <div className="absolute top-3 right-3"><span className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-semibold bg-yellow-600 text-white">{notifs.adminApproveNotifs}</span></div>}
                       <div className="w-12 h-12 bg-yellow-50 text-yellow-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-105 transition-transform"><AlertTriangle className="w-6 h-6" /></div>
                       <h3 className="text-lg font-semibold mb-2">Approve Answers</h3>
                       <p className="text-sm text-gray-500">Review and approve community answers to make them available.</p>
                    </Card>
                  </Link>
                  <Link to="/escalated">
-                   <Card className="p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer h-full group border-l-4 border-l-red-500">
+                   <Card className="relative p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer h-full group border-l-4 border-l-red-500">
+                     {notifs.adminEscalatedNotifs > 0 && <div className="absolute top-3 right-3"><span className="inline-flex items-center justify-center px-2 py-1 rounded-full text-xs font-semibold bg-red-600 text-white">{notifs.adminEscalatedNotifs}</span></div>}
                       <div className="w-12 h-12 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center mb-4 group-hover:scale-105 transition-transform"><AlertTriangle className="w-6 h-6" /></div>
                       <h3 className="text-lg font-semibold mb-2">Escalated Queries</h3>
                       <p className="text-sm text-gray-500">View and resolve queries that have been escalated to admins.</p>
@@ -476,12 +562,26 @@ function ResolveQuery() {
 
 function TrackQuery() {
   const [queries, setQueries] = useState<Query[]>([]);
+  const { refresh } = useNotifications();
 
   useEffect(() => {
     fetchMyQueries();
   }, []);
 
-  const fetchMyQueries = () => api.get('/queries/my').then(res => setQueries(res.data)).catch(console.error);
+  const fetchMyQueries = async () => {
+    try {
+      const res = await api.get('/queries/my');
+      const my = res.data || [];
+      // mark any unread queries as read
+      const unread = my.filter((q: any) => q.studentRead === false);
+      if (unread.length > 0) {
+        await Promise.all(unread.map((q: any) => api.patch(`/queries/${q._id}/read`).catch(() => {})));
+        // refresh notification counts
+        try { refresh(); } catch (e) { /* ignore */ }
+      }
+      setQueries(my);
+    } catch (e) { console.error(e); }
+  };
 
   const handleEscalate = async (id: string, currentlyEscalated: boolean) => {
     try {
@@ -797,7 +897,8 @@ export default function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Routes>
+        <NotificationProvider>
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
              <Route index element={<Dashboard />} />
@@ -810,6 +911,7 @@ export default function App() {
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </NotificationProvider>
       </BrowserRouter>
     </AuthProvider>
   );
