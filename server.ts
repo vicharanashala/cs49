@@ -15,9 +15,6 @@ const PORT          = Number(process.env.PORT)  || 3000;
 const MONGO_URI     = process.env.MONGODB_URI   || 'mongodb://localhost:27017/crowdfaq';
 
 // ─── TF-IDF SEARCH ENGINE ─────────────────────────────────────────────────────
-// Replaces the broken MiniMax-embedding + cosine-similarity approach.
-// TF-IDF is computed from all FAQ questions at runtime — fully offline, no API key needed.
-
 const TfIdf    = natural.TfIdf;
 const tokenizer = new natural.WordTokenizer();
 const stemmer  = natural.PorterStemmer;
@@ -35,7 +32,6 @@ async function rebuildTfIdfIndex(faqs: any[]) {
     tags:     f.tags || [],
   }));
   for (const faq of faqCorpus) {
-    // Combine question + answer, lowercase, tokenize, stem, remove stopwords
     const text = (faq.question + ' ' + faq.answer).toLowerCase();
     const tokens = tokenizer.tokenize(text) || [];
     const cleaned = removeStopwords(tokens.map(t => stemmer.stem(t)));
@@ -60,23 +56,19 @@ function tfIdfSearch(query: string, topN = 10): any[] {
     const faq   = faqCorpus[i];
     let score   = 0;
 
-    // TF-IDF score: how well does this FAQ's corpus match the query terms?
     tfidfIndex.tfidfs(cleaned.join(' '), (_term, measure, idx) => {
-      if (idx === i) score = measure;
+      if (typeof idx === 'number' && idx === i) score = measure;
     });
 
-    // Bonus: exact question-word overlap (questions are more valuable than answer text)
     const qTokens   = tokenizer.tokenize(faq.question.toLowerCase()) || [];
     const qCleaned  = removeStopwords(qTokens.map(t => stemmer.stem(t)));
     const overlap   = cleaned.filter(t => qCleaned.includes(t)).length;
-    score += overlap * 2.0;   // 2× weight for question-term matches
+    score += overlap * 2.0;
 
-    // Bonus: tag match
     for (const tag of faq.tags) {
       if (cleaned.includes(tag)) score += 3.0;
     }
 
-    // Bonus: if query words appear in the question at all (not just stemmed), small boost
     const qWords = new Set(faq.question.toLowerCase().split(/\s+/));
     for (const w of queryTokens) {
       if (qWords.has(w)) score += 0.5;
@@ -88,14 +80,10 @@ function tfIdfSearch(query: string, topN = 10): any[] {
   return results
     .sort((a, b) => b.score - a.score)
     .slice(0, topN)
-    .map(r => ({
-      ...r.faq,
-      similarity: Math.round(r.score * 100) / 100,
-    }));
+    .map(r => ({ ...r.faq, similarity: Math.round(r.score * 100) / 100 }));
 }
 
 // ─── MONGOOSE SCHEMAS ─────────────────────────────────────────────────────────
-
 const userSchema = new mongoose.Schema({
   name:     { type: String, required: true },
   email:    { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -114,6 +102,7 @@ const proposedAnswerSchema = new mongoose.Schema({
 const querySchema = new mongoose.Schema({
   userId:          { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   questionText:    { type: String, required: true },
+  studentRead:     { type: Boolean, default: true },
   status:          { type: String, enum: ['open', 'pending_approval', 'resolved', 'promoted', 'escalated'], default: 'open' },
   proposedAnswers: [proposedAnswerSchema],
   rating:          { type: Number, default: 0 },
@@ -128,14 +117,13 @@ const QueryModel = mongoose.model('Query', querySchema);
 const faqSchema = new mongoose.Schema({
   question:           { type: String, required: true, trim: true },
   answer:             { type: String, required: true },
-  question_embedding: { type: [Number], default: [] }, // kept for compat; no longer used
+  question_embedding: { type: [Number], default: [] },
   tags:               { type: [String], default: [] },
   createdAt:          { type: Date, default: Date.now },
 }, { timestamps: true });
 const FAQ = mongoose.model('FAQ', faqSchema);
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-
 async function promoteToFaq(query: mongoose.Document) {
   const approved = (query.toObject() as any).proposedAnswers[
     (query.toObject() as any).proposedAnswers.length - 1
@@ -148,7 +136,6 @@ async function promoteToFaq(query: mongoose.Document) {
     tags:               query.get('tags') || [],
     createdAt:          new Date(),
   });
-  // Rebuild TF-IDF index with the newly promoted FAQ
   const allFaqs = await FAQ.find().lean();
   await rebuildTfIdfIndex(allFaqs);
 }
@@ -194,7 +181,6 @@ async function connectDB() {
     console.log('FAQs seeded (15 default).');
   }
 
-  // Build TF-IDF index from whatever is in the DB now
   const allFaqs = await FAQ.find().lean();
   await rebuildTfIdfIndex(allFaqs);
 }
@@ -227,10 +213,8 @@ async function startServer() {
 
   await connectDB();
 
-  // Health
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 
-  // ── Auth: Login
   app.post('/api/auth/login', async (req: Request, res: Response) => {
     try {
       const { email, password } = req.body;
@@ -243,7 +227,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Auth: Signup
   app.post('/api/auth/signup', async (req: Request, res: Response) => {
     try {
       const { name, email, password } = req.body;
@@ -256,8 +239,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── GET /api/faqs  (public — no auth required)
-  //    GET /api/faqs?q=...  → TF-IDF keyword + semantic search
   app.get('/api/faqs', async (req: AuthRequest, res: Response) => {
     try {
       const { q } = req.query;
@@ -271,7 +252,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── GET /api/faq  (auth required — same TF-IDF search)
   app.get('/api/faq', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const { q } = req.query;
@@ -285,19 +265,16 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── POST /api/faq  (admin: manual FAQ creation)
   app.post('/api/faq', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
     try {
       const { question, answer, tags } = req.body;
       const faq = await FAQ.create({ question, answer, tags: tags || [], question_embedding: [] });
-      // Rebuild index to include the new FAQ
       const allFaqs = await FAQ.find().lean();
       await rebuildTfIdfIndex(allFaqs);
       res.status(201).json({ ...faq.toObject(), _id: faq._id.toString() });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── GET /api/queries/open  (peer-resolve view)
   app.get('/api/queries/open', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const queries = await QueryModel.find({ status: { $in: ['open', 'escalated'] } })
@@ -306,7 +283,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── GET /api/queries/my  (intern's own queries)
   app.get('/api/queries/my', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const queries = await QueryModel.find({ userId: req.user!.id }).sort({ createdAt: -1 }).lean();
@@ -314,7 +290,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── GET /api/queries/pending  (admin approval queue)
   app.get('/api/queries/pending', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const queries = await QueryModel.find({ status: 'pending_approval' })
@@ -323,7 +298,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── GET /api/queries/escalated  (admin escalated view)
   app.get('/api/queries/escalated', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const queries = await QueryModel.find({ status: 'escalated' })
@@ -332,7 +306,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── POST /api/queries  (Raise a Query — Open state)
   app.post('/api/queries', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const { questionText, tags } = req.body;
@@ -343,12 +316,11 @@ async function startServer() {
         questionText: { $regex: new RegExp(questionText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') },
         status: 'open',
       }).lean();
-      const query = await QueryModel.create({ userId: req.user!.id, questionText, tags: tags || [] });
+      const query = await QueryModel.create({ userId: req.user!.id, questionText, tags: tags || [], studentRead: true });
       res.status(201).json(flattenQuery(query.toObject(), existing?._id?.toString()));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── POST /api/queries/:id/answers  (Propose Answer → Open → Pending Approval)
   app.post('/api/queries/:id/answers', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const { answerText } = req.body;
@@ -362,13 +334,13 @@ async function startServer() {
         createdAt: new Date(),
       } as any);
       query.status = 'pending_approval';
+      query.studentRead = false;
       await query.save();
       const populated = await QueryModel.findById(query._id).populate('userId', 'name').lean();
       res.json(flattenQuery(populated!));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── PATCH /api/queries/:id/vote  (upvote / downvote)
   app.patch('/api/queries/:id/vote', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const { type } = req.body;
@@ -381,7 +353,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── PATCH /api/queries/:id/feedback  (rate 1–5)
   app.post('/api/queries/:id/feedback', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const { rating } = req.body;
@@ -398,20 +369,19 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── PATCH /api/queries/:id/approve  (Admin: Pending Approval → Resolved)
   app.patch('/api/queries/:id/approve', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
     try {
       const query = await QueryModel.findById(req.params.id);
       if (!query) { res.status(404).json({ error: 'Query not found' }); return; }
       await promoteToFaq(query);
       query.status = 'resolved';
+      query.studentRead = false;
       await query.save();
       const populated = await QueryModel.findById(query._id).populate('userId', 'name').lean();
       res.json(flattenQuery(populated!));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── POST /api/queries/:id/promote  (Admin: Resolved → Promoted)
   app.post('/api/queries/:id/promote', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
     try {
       const query = await QueryModel.findById(req.params.id);
@@ -425,7 +395,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── PATCH /api/queries/:id/reject  (Admin: Re-open query)
   app.patch('/api/queries/:id/reject', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
     try {
       const query = await QueryModel.findByIdAndUpdate(
@@ -438,7 +407,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── PATCH /api/queries/:id/escalate  (Toggle escalation)
   app.patch('/api/queries/:id/escalate', authenticateToken, async (req: AuthRequest, res: Response) => {
     try {
       const query = await QueryModel.findById(req.params.id);
@@ -450,7 +418,6 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── POST /api/queries/:id/admin-resolve  (Admin direct resolve of escalated)
   app.post('/api/queries/:id/admin-resolve', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
     try {
       const { answerText } = req.body;
@@ -465,19 +432,30 @@ async function startServer() {
       } as any);
       query.status = 'resolved';
       query.escalated = false;
+      query.studentRead = false;
       await query.save();
       const populated = await QueryModel.findById(query._id).populate('userId', 'name').lean();
       res.json(flattenQuery(populated!));
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
-  // ── Error Handler
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
     console.error(err.stack);
     res.status(500).json({ error: 'Something went wrong!', details: err.message });
   });
 
-  // ── Vite (dev) or static (prod)
+  app.patch('/api/queries/:id/read', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const query = await QueryModel.findById(req.params.id);
+      if (!query) { res.status(404).json({ error: 'Query not found' }); return; }
+      if (query.userId?.toString() !== req.user!.id) { res.status(403).json({ error: 'Not allowed' }); return; }
+      query.studentRead = true;
+      await query.save();
+      const populated = await QueryModel.findById(query._id).populate('userId', 'name').lean();
+      res.json(flattenQuery(populated!));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
@@ -489,7 +467,6 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => console.log(`✅ Server running on http://localhost:${PORT}`));
 }
 
-// ─── SHARED HELPER ────────────────────────────────────────────────────────────
 function flattenQuery(q: any, duplicateId?: string): any {
   return {
     ...q,
