@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, Link, Outlet } from 'react-router-dom';
 import axios from 'axios';
-import { HelpCircle, FileText, CheckCircle2, MessageSquarePlus, LogOut, Loader2, Star, AlertTriangle, ArrowRight, TrendingUp } from 'lucide-react';
+import { HelpCircle, FileText, CheckCircle2, MessageSquarePlus, LogOut, Loader2, Star, AlertTriangle, ArrowRight, TrendingUp, Bell } from 'lucide-react';
 
 // --- Axios Config ---
 const api = axios.create({ baseURL: '/api' });
@@ -24,6 +24,7 @@ api.interceptors.response.use(
 
 // --- Types & Context ---
 interface User { id: string; name: string; email: string; role: string; }
+interface NotificationItem { id: string; type: 'answer' | 'approval' | 'escalation' | 'info'; message: string; link: string; read: boolean; time: string; }
 interface ProposedAnswer { _id: string; answerText: string; answeredByName: string; createdAt: string; }
 interface Query { _id: string; questionText: string; status: 'open' | 'pending_approval' | 'resolved' | 'promoted' | 'escalated'; proposedAnswers: ProposedAnswer[]; rating: number; helpfulVotes: number; upvotes: number; downvotes: number; escalated: boolean; createdAt: string; }
 interface Faq { _id: string; question: string; answer: string; tags: string[]; similarity?: number; createdAt: string; }
@@ -36,10 +37,55 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+type ToastType = 'success' | 'error';
+
+interface NotificationContextType {
+  showNotification: (message: string, type?: ToastType) => void;
+}
+
+const NotificationContext = createContext<NotificationContextType | null>(null);
+
 function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used within AuthProvider");
   return ctx;
+}
+
+function useNotification() {
+  const ctx = useContext(NotificationContext);
+  if (!ctx) throw new Error("useNotification must be used within NotificationProvider");
+  return ctx;
+}
+
+function NotificationProvider({ children }: { children: ReactNode }) {
+  const [notifications, setNotifications] = useState<Array<{ id: number; message: string; type: ToastType }>>([]);
+
+  const showNotification = (message: string, type: ToastType = 'success') => {
+    const id = Date.now() + Math.random();
+    setNotifications((prev) => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setNotifications((prev) => prev.filter((item) => item.id !== id));
+    }, 3200);
+  };
+
+  return (
+    <NotificationContext.Provider value={{ showNotification }}>
+      {children}
+      <div className="fixed top-4 right-4 z-50 flex w-[min(92vw,380px)] flex-col gap-2">
+        {notifications.map((item) => (
+          <div
+            key={item.id}
+            className={`rounded-2xl border px-4 py-3 text-sm shadow-xl backdrop-blur ${item.type === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-green-200 bg-green-50 text-green-800'}`}
+          >
+            <div className="flex items-start gap-3">
+              {item.type === 'error' ? <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />}
+              <span className="font-medium">{item.message}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </NotificationContext.Provider>
+  );
 }
 
 function AuthProvider({ children }: { children: ReactNode }) {
@@ -137,6 +183,24 @@ function Login() {
 
 function Layout() {
   const { user, logout } = useAuth();
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [openNotifications, setOpenNotifications] = useState(false);
+
+  useEffect(() => {
+    const loadNotifications = async () => {
+      try {
+        const { data } = await api.get<NotificationItem[]>('/notifications');
+        setNotifications(data || []);
+      } catch (error) {
+        console.error('Failed to load notifications', error);
+      }
+    };
+
+    loadNotifications();
+    const interval = window.setInterval(loadNotifications, 15000);
+    return () => window.clearInterval(interval);
+  }, []);
+
   return (
     <div className="min-h-screen bg-gray-50 font-sans text-gray-900 flex flex-col">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-20">
@@ -145,7 +209,42 @@ function Layout() {
             <img src="/logo.png" alt="VINS-Connect Logo" className="h-10 w-10 rounded-lg object-cover shadow-sm" />
             <span className="font-semibold text-lg tracking-tight">VINS-Connect</span>
           </Link>
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-4 md:gap-6">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setOpenNotifications((prev) => !prev)}
+                className="relative flex items-center rounded-full border border-gray-200 bg-gray-50 p-2 text-gray-700 hover:bg-gray-100 transition-colors"
+              >
+                <Bell className="h-4 w-4" />
+                {notifications.length > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white shadow-sm">{notifications.length}</span>
+                )}
+              </button>
+              {openNotifications && (
+                <div className="absolute right-0 mt-2 w-80 rounded-2xl border border-gray-200 bg-white p-3 shadow-2xl z-30">
+                  <div className="mb-2 flex items-center justify-between px-1">
+                    <p className="text-sm font-semibold text-gray-900">Notifications</p>
+                    <span className="text-xs text-gray-400">Live updates</span>
+                  </div>
+                  <div className="max-h-72 space-y-2 overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="rounded-xl bg-gray-50 p-4 text-sm text-gray-500">No notifications yet.</div>
+                    ) : notifications.map((item) => (
+                      <Link
+                        key={item.id}
+                        to={item.link}
+                        onClick={() => setOpenNotifications(false)}
+                        className="block rounded-xl border border-gray-100 bg-gray-50 p-3 text-left transition-colors hover:bg-gray-100"
+                      >
+                        <p className="text-sm font-medium text-gray-800">{item.message}</p>
+                        <p className="mt-1 text-[11px] text-gray-500">{item.type} • {item.time}</p>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="hidden sm:flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-100">
                <span className="w-2 h-2 rounded-full bg-green-500"></span>
                <span className="text-xs font-medium text-gray-600">{user?.name} ({user?.role})</span>
@@ -366,6 +465,7 @@ function ResolveQuery() {
   const [selectedId, setSelectedId] = useState<string>('');
   const [answer, setAnswer] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const { showNotification } = useNotification();
 
   useEffect(() => {
     fetchOpenQueries();
@@ -384,9 +484,10 @@ function ResolveQuery() {
       setAnswer('');
       setSelectedId('');
       fetchOpenQueries();
-      alert("Answer submitted successfully!");
+      showNotification('Answer submitted successfully!');
     } catch (e) {
       console.error(e);
+      showNotification('Unable to submit your answer right now.', 'error');
     } finally {
       setSubmitting(false);
     }
@@ -576,6 +677,7 @@ function TrackQuery() {
 function ApproveQuery() {
   const [queries, setQueries] = useState<Query[]>([]);
   const { user } = useAuth();
+  const { showNotification } = useNotification();
 
   const fetchPending = () => api.get('/queries/pending').then(res => setQueries(res.data)).catch(console.error);
 
@@ -589,24 +691,24 @@ function ApproveQuery() {
     try {
       await api.patch(`/queries/${id}/approve`);
       fetchPending();
-      alert("Answer approved and promoted to FAQ!");
-    } catch (e) { console.error(e); }
+      showNotification('Answer approved and promoted to FAQ!');
+    } catch (e) { console.error(e); showNotification('Approval failed. Please try again.', 'error'); }
   };
 
   const handlePromote = async (id: string) => {
     try {
       await api.post(`/queries/${id}/promote`);
       fetchPending();
-      alert("Query promoted to FAQ repository.");
-    } catch (e) { console.error(e); }
+      showNotification('Query promoted to FAQ repository.');
+    } catch (e) { console.error(e); showNotification('Promotion failed. Please try again.', 'error'); }
   };
 
   const handleReject = async (id: string) => {
     try {
       await api.patch(`/queries/${id}/reject`);
       fetchPending();
-      alert("Answer rejected and query re-opened.");
-    } catch (e) { console.error(e); }
+      showNotification('Answer rejected and query re-opened.');
+    } catch (e) { console.error(e); showNotification('Rejection failed. Please try again.', 'error'); }
   };
 
   return (
@@ -796,8 +898,9 @@ function AllFaqs() {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Routes>
+      <NotificationProvider>
+        <BrowserRouter>
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
              <Route index element={<Dashboard />} />
@@ -809,8 +912,9 @@ export default function App() {
              <Route path="escalated" element={<EscalatedQueries />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </BrowserRouter>
+          </Routes>
+        </BrowserRouter>
+      </NotificationProvider>
     </AuthProvider>
   );
 }

@@ -471,6 +471,127 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
 
+  // ── GET /api/notifications  (personalized for the logged-in user)
+  app.get('/api/notifications', authenticateToken, async (req: AuthRequest, res: Response) => {
+    try {
+      const userId = new mongoose.Types.ObjectId(req.user!.id);
+      const isAdmin = req.user!.role === 'admin';
+
+      const [myQueries, pendingQueries, openQueries] = await Promise.all([
+        QueryModel.find({ userId }).sort({ createdAt: -1 }).limit(5).lean(),
+        isAdmin ? QueryModel.find({ status: 'pending_approval' }).countDocuments() : 0,
+        QueryModel.find({ status: 'open' }).countDocuments(),
+      ]);
+
+      const notifications: { id: string; type: 'answer' | 'approval' | 'escalation' | 'info'; message: string; link: string; read: boolean; time: string }[] = [];
+
+      if (isAdmin) {
+        if (pendingQueries > 0) notifications.push({
+          id: 'pending-admin',
+          type: 'info',
+          message: `${pendingQueries} query(ies) waiting for your approval`,
+          link: '/approve',
+          read: false,
+          time: 'now',
+        });
+      }
+
+      for (const q of myQueries) {
+        if (q.status === 'pending_approval' && q.proposedAnswers.length > 0) {
+          notifications.push({
+            id: `answer-${q._id}`,
+            type: 'answer',
+            message: `Your query received an answer: "${q.questionText.slice(0, 50)}..."`,
+            link: '/track',
+            read: false,
+            time: 'recently',
+          });
+        }
+        if (q.status === 'resolved') {
+          notifications.push({
+            id: `resolved-${q._id}`,
+            type: 'approval',
+            message: `Your query was resolved: "${q.questionText.slice(0, 50)}..."`,
+            link: '/track',
+            read: false,
+            time: 'recently',
+          });
+        }
+      }
+
+      const openCount = await QueryModel.countDocuments({ status: 'open' });
+      if (openCount > 0) notifications.push({
+        id: 'open-queries',
+        type: 'info',
+        message: `${openCount} open query(ies) need community answers`,
+        link: '/resolve',
+        read: false,
+        time: 'now',
+      });
+
+      res.json(notifications.slice(0, 10));
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ── GET /api/stats  (admin dashboard analytics)
+  app.get('/api/stats', authenticateToken, requireAdmin, async (_req: AuthRequest, res: Response) => {
+    try {
+      const now = new Date();
+      const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+      const [
+        totalQueries, openQueries, pendingQueries, resolvedQueries, promotedQueries,
+        faqCount, userCount,
+        queriesLastWeek,
+        tagCounts,
+        recentQueries,
+      ] = await Promise.all([
+        QueryModel.countDocuments(),
+        QueryModel.countDocuments({ status: 'open' }),
+        QueryModel.countDocuments({ status: 'pending_approval' }),
+        QueryModel.countDocuments({ status: 'resolved' }),
+        QueryModel.countDocuments({ status: 'promoted' }),
+        FAQ.countDocuments(),
+        User.countDocuments(),
+        QueryModel.countDocuments({ createdAt: { $gte: weekAgo } }),
+        QueryModel.aggregate([{ $unwind: { path: '$tags', preserveNullAndEmptyArrays: false } }, { $group: { _id: '$tags', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 8 }]),
+        QueryModel.find().sort({ createdAt: -1 }).limit(20).select('questionText status createdAt').lean(),
+      ]);
+
+      const resolutionRate = totalQueries > 0 ? Math.round((resolvedQueries / totalQueries) * 100) : 0;
+      const avgRatingResult = await QueryModel.aggregate([
+        { $match: { rating: { $gt: 0 } } },
+        { $group: { _id: null, avgRating: { $avg: '$rating' } } },
+      ]);
+      const avgRating = avgRatingResult[0]?.avgRating ?? 0;
+
+      const resolutionByDay: { date: string; count: number }[] = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+        const dayStr = d.toISOString().slice(0, 10);
+        const dayQueries = recentQueries.filter((q: any) =>
+          q.status !== 'open' && q.createdAt?.toString().slice(0, 10) === dayStr
+        );
+        resolutionByDay.push({ date: dayStr, count: dayQueries.length });
+      }
+
+      res.json({
+        totalQueries,
+        openQueries,
+        pendingQueries,
+        resolvedQueries,
+        promotedQueries,
+        faqCount,
+        userCount,
+        queriesLastWeek,
+        resolutionRate: Math.round(resolutionRate * 10) / 10,
+        avgRating: Math.round(avgRating * 10) / 10,
+        topTags: tagCounts.map((t: any) => ({ tag: t._id, count: t.count })),
+        resolutionByDay,
+      });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── Error Handler
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
     console.error(err.stack);
